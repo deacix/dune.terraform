@@ -1,0 +1,232 @@
+---
+globs: infra/terraform/**/*
+alwaysApply: true
+---
+
+# Dune Analytics Terraform Module
+
+Rules for developing and maintaining the Dune Terraform module in this project.
+
+## Dune Platform Overview
+
+[Dune](https://docs.dune.com/) is the onchain data platform for analytics, data engineering, and application development. Key capabilities:
+
+- **100+ blockchains indexed** with 3+ petabytes of data
+- **DuneSQL**: Trino fork fine-tuned for blockchain analytics
+- **Materialized Views**: Pre-computed results for enhanced query performance
+- **API Access**: Execute queries and retrieve results programmatically
+
+## Dune API Reference
+
+Reference: [Dune API Documentation](https://docs.dune.com/api-reference/overview/introduction)
+
+### Authentication
+
+All API requests require an API key in the header:
+
+```bash
+curl -H "X-Dune-API-Key: YOUR_API_KEY" https://api.dune.com/api/v1/...
+```
+
+### Key Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/query` | POST | Create a new query |
+| `/query/{query_id}` | GET | Get query details |
+| `/query/{query_id}` | PATCH | Update query SQL/name |
+| `/query/{query_id}/archive` | POST | Archive (soft delete) a query |
+| `/query/{query_id}/execute` | POST | Execute a query |
+| `/query/{query_id}/results` | GET | Get cached query results |
+| `/execution/{execution_id}/status` | GET | Check execution status |
+| `/execution/{execution_id}/results` | GET | Get execution results |
+| `/materialized-views` | POST | Create/upsert materialized view |
+| `/materialized-views/{name}` | GET | Get mat view details |
+| `/materialized-views/{name}/refresh` | POST | Trigger mat view refresh |
+
+### Query Creation
+
+```bash
+POST /api/v1/query
+{
+  "name": "My Query",
+  "query_sql": "SELECT * FROM ethereum.transactions LIMIT 10",
+  "is_private": true
+}
+```
+
+Response includes `query_id` for subsequent operations.
+
+### Materialized Views
+
+```bash
+POST /api/v1/materialized-views
+{
+  "name": "result_my_view",
+  "query_id": 12345,
+  "cron": "0 */1 * * *"
+}
+```
+
+Full name format: `dune.{team}.{name}`
+
+## DuneSQL Query Engine
+
+Reference: [DuneSQL Documentation](https://docs.dune.com/query-engine/overview)
+
+### Key Features
+
+- **Varbinary Data Types**: Efficient storage for addresses and hashes
+- **Uint256 & Int256 Support**: Essential for blockchain's large numerical data
+- **Columnar Storage**: Optimizes read speed
+- **Query Views**: Complex query construction and reusability
+- **Materialized Views**: Pre-computed results for performance
+
+### Best Practices
+
+1. **Use explicit date filters** for partition pruning
+2. **Use `approx_distinct()`** for 10x faster counts with <1% error
+3. **Limit results** appropriately (e.g., `LIMIT 2000`)
+4. **Avoid `SELECT *`** - specify needed columns
+
+### SQL Metadata Format
+
+SQL files support metadata in header comments:
+
+```sql
+-- name: Query Display Name
+-- description: What this query does
+-- tags: tag1, tag2, tag3
+-- private: true
+
+SELECT ...
+```
+
+## Terraform Module Architecture
+
+### Module Structure
+
+```
+infra/terraform/modules/dune/
+├── main.tf           # Resource definitions (queries, mat views)
+├── variables.tf      # Input variables with validation
+├── outputs.tf        # Output values (query_ids, URLs, etc.)
+├── locals.tf         # Computed values (names, hashes)
+├── versions.tf       # Provider requirements
+├── scripts/          # Shell scripts for API calls
+│   ├── create_query.sh
+│   ├── update_query.sh
+│   ├── get_query.sh
+│   ├── archive_query.sh
+│   ├── create_matview.sh
+│   └── refresh_matview.sh
+└── tests/            # Terraform native tests
+    ├── unit.tftest.hcl
+    ├── validation.tftest.hcl
+    └── outputs.tftest.hcl
+```
+
+### Key Resources
+
+| Resource | Purpose |
+|----------|---------|
+| `data.external.create_query` | Creates queries via API, captures query_id |
+| `null_resource.queries` | Tracks query state, handles updates/destroy |
+| `null_resource.materialized_views` | Manages mat view lifecycle |
+| `local_file.state_yaml` | Optional Python tool compatibility |
+
+### Input Variables
+
+**Required:**
+- `team` - Dune team/namespace name
+- `dune_api_key` - API key with write permissions
+
+**Optional:**
+- `query_prefix` - Prefix for query names (e.g., "[Dashboard]")
+- `query_folder` - Folder for organizing queries
+- `is_private` - Default privacy setting (default: true)
+- `default_performance` - Mat view performance tier ("medium" or "large")
+
+### Query Definition
+
+```hcl
+queries = {
+  my_query = {
+    name        = "My Query Name"
+    description = "What it does"
+    sql         = "SELECT ..."      # Inline SQL
+    # OR
+    sql_file    = "path/to/file.sql" # External file
+    tags        = ["tag1", "tag2"]
+    private     = true
+  }
+}
+```
+
+### Materialized View Definition
+
+```hcl
+materialized_views = {
+  result_my_query = {
+    query_key   = "my_query"       # Key from queries map
+    cron        = "0 */1 * * *"    # Refresh schedule
+    performance = "medium"         # "medium" or "large"
+  }
+}
+```
+
+## Cron Expression Reference
+
+| Schedule | Expression |
+|----------|------------|
+| Every hour | `0 */1 * * *` |
+| Every 2 hours | `0 */2 * * *` |
+| Every 6 hours | `0 */6 * * *` |
+| Daily at midnight | `0 0 * * *` |
+| Weekly (Sunday) | `0 0 * * 0` |
+
+## Testing
+
+Run module tests:
+
+```bash
+cd infra/terraform/modules/dune
+terraform init
+terraform test
+```
+
+Tests use mocks to avoid real API calls. Test categories:
+- **Unit tests**: Core logic (naming, hashing, configuration)
+- **Validation tests**: Input validation (required fields, valid values)
+- **Output tests**: Output format verification
+
+## Development Guidelines
+
+### Adding a New Query
+
+1. Add query definition to the `queries` variable
+2. Optionally add materialized view in `materialized_views`
+3. Run `terraform plan` to preview changes
+4. Run `terraform apply` to deploy
+
+### Updating SQL
+
+1. Modify the SQL content (inline or file)
+2. Terraform detects hash change automatically
+3. Run `terraform apply` to update on Dune
+
+### Important Notes
+
+1. **No official Terraform provider**: Module uses REST API via shell scripts
+2. **DUNE_API_KEY required**: Must be set in environment for destroy operations
+3. **Mat views can't be deleted**: They orphan when underlying query is archived
+4. **Folder assignment manual**: Dune API doesn't support folder assignment
+5. **Rate limits apply**: Large deployments may need batching
+
+## Related Documentation
+
+- [Dune API Reference](https://docs.dune.com/api-reference/overview/introduction)
+- [DuneSQL Query Engine](https://docs.dune.com/query-engine/overview)
+- [Materialized Views](https://docs.dune.com/query-engine/materialized-views)
+- [Terraform Testing](https://developer.hashicorp.com/terraform/language/tests)
+- [Project Dune Rules](../../../.cursor/rules/dune-api.mdc)

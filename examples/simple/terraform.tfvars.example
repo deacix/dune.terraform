@@ -1,0 +1,11 @@
+# =============================================================================
+# Example terraform.tfvars
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in your values.
+# Do NOT commit terraform.tfvars to version control!
+
+# Dune API key (get from https://dune.com/settings/api)
+dune_api_key = "your-dune-api-key-here"
+
+# Your Dune team name
+team = "my-team"

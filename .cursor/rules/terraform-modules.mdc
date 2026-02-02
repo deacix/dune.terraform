@@ -1,0 +1,369 @@
+---
+globs: infra/terraform/**/*
+alwaysApply: true
+---
+
+# Terraform Module Development
+
+Best practices and conventions for developing Terraform modules in this project.
+
+## Module Structure
+
+Reference: [Terraform Module Development](https://developer.hashicorp.com/terraform/language/modules/develop)
+
+### Standard Module Layout
+
+```
+modules/{module_name}/
+├── main.tf           # Primary resource definitions
+├── variables.tf      # Input variable declarations
+├── outputs.tf        # Output value declarations
+├── locals.tf         # Local value computations
+├── versions.tf       # Provider and Terraform version constraints
+├── README.md         # Module documentation
+├── scripts/          # Helper scripts (if needed)
+└── tests/            # Terraform native tests (.tftest.hcl)
+```
+
+### File Naming Conventions
+
+| File | Purpose |
+|------|---------|
+| `main.tf` | Primary resources and data sources |
+| `variables.tf` | All input variable declarations |
+| `outputs.tf` | All output declarations |
+| `locals.tf` | Local values and computed expressions |
+| `versions.tf` | `terraform` and `required_providers` blocks |
+| `providers.tf` | Provider configurations (if module configures providers) |
+| `data.tf` | Data source definitions (alternative to main.tf) |
+
+## Variable Best Practices
+
+### Variable Declaration
+
+```hcl
+variable "name" {
+  description = "Clear description of what this variable does"
+  type        = string
+  default     = "default_value"  # Optional
+
+  validation {
+    condition     = length(var.name) > 0
+    error_message = "Name cannot be empty."
+  }
+}
+```
+
+### Variable Types
+
+```hcl
+# Simple types
+type = string
+type = number
+type = bool
+
+# Complex types
+type = list(string)
+type = set(string)
+type = map(string)
+
+# Object types with optional fields
+type = map(object({
+  name        = string
+  description = optional(string, "")
+  enabled     = optional(bool, true)
+}))
+```
+
+### Sensitive Variables
+
+```hcl
+variable "api_key" {
+  description = "API key for authentication"
+  type        = string
+  sensitive   = true  # Prevents value from appearing in logs
+}
+```
+
+## Output Best Practices
+
+### Output Declaration
+
+```hcl
+output "resource_id" {
+  description = "The ID of the created resource"
+  value       = resource.example.id
+}
+
+output "sensitive_data" {
+  description = "Sensitive output value"
+  value       = resource.example.secret
+  sensitive   = true
+}
+```
+
+### Output Patterns
+
+```hcl
+# Map of resources
+output "query_ids" {
+  description = "Map of query keys to their IDs"
+  value = {
+    for k, v in null_resource.queries : k => v.triggers.query_id
+  }
+}
+
+# Conditional output
+output "state_file" {
+  description = "Path to state file (if enabled)"
+  value       = var.enable_state_file ? local_file.state[0].filename : null
+}
+```
+
+## Local Values
+
+### Computing Derived Values
+
+```hcl
+locals {
+  # Simple computation
+  full_name = "${var.prefix}-${var.name}"
+
+  # Map transformation
+  processed_items = {
+    for k, v in var.items : k => {
+      name     = "${var.prefix} ${v.name}"
+      enabled  = coalesce(v.enabled, true)
+    }
+  }
+
+  # Conditional values
+  api_url = var.environment == "prod" ? "https://api.example.com" : "https://api-staging.example.com"
+}
+```
+
+## Resource Patterns
+
+### For Each vs Count
+
+```hcl
+# Prefer for_each for named resources
+resource "null_resource" "queries" {
+  for_each = var.queries
+  
+  triggers = {
+    name = each.value.name
+    hash = sha256(each.value.sql)
+  }
+}
+
+# Use count for conditional resources
+resource "local_file" "config" {
+  count    = var.enable_config ? 1 : 0
+  filename = var.config_path
+  content  = local.config_content
+}
+```
+
+### Depends On
+
+```hcl
+resource "null_resource" "dependent" {
+  depends_on = [null_resource.prerequisite]
+  
+  # ...
+}
+```
+
+### Lifecycle Rules
+
+```hcl
+resource "example" "this" {
+  # ...
+  
+  lifecycle {
+    create_before_destroy = true
+    prevent_destroy       = false
+    ignore_changes        = [tags]
+  }
+}
+```
+
+## Testing
+
+Reference: [Terraform Tests](https://developer.hashicorp.com/terraform/language/tests)
+
+### Test File Structure
+
+```hcl
+# tests/unit.tftest.hcl
+
+# Mock providers to avoid real API calls
+mock_provider "external" {
+  mock_data "external" {
+    defaults = {
+      result = { id = "12345" }
+    }
+  }
+}
+
+# Test run block
+run "test_name" {
+  command = plan  # or apply
+
+  variables {
+    input_var = "test_value"
+  }
+
+  assert {
+    condition     = output.result == "expected"
+    error_message = "Result did not match expected value"
+  }
+}
+```
+
+### Validation Tests
+
+```hcl
+run "invalid_input_rejected" {
+  command = plan
+
+  variables {
+    required_field = ""  # Invalid - empty
+  }
+
+  expect_failures = [
+    var.required_field,
+  ]
+}
+```
+
+### Running Tests
+
+```bash
+cd modules/{module_name}
+terraform init
+terraform test
+```
+
+## Documentation
+
+### README Template
+
+```markdown
+# Module Name
+
+Brief description of what the module does.
+
+## Usage
+
+\`\`\`hcl
+module "example" {
+  source = "./modules/example"
+  
+  required_var = "value"
+}
+\`\`\`
+
+## Requirements
+
+| Name | Version |
+|------|---------|
+| terraform | >= 1.0 |
+| provider | >= x.x |
+
+## Inputs
+
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|:--------:|
+| var | Description | type | default | yes/no |
+
+## Outputs
+
+| Name | Description |
+|------|-------------|
+| output | Description |
+```
+
+## Version Constraints
+
+### versions.tf Template
+
+```hcl
+terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.0"
+    }
+    external = {
+      source  = "hashicorp/external"
+      version = ">= 2.0"
+    }
+  }
+}
+```
+
+## Common Patterns
+
+### External API Calls
+
+When no native provider exists, use `external` data source with scripts:
+
+```hcl
+data "external" "api_call" {
+  program = ["bash", "${path.module}/scripts/api_call.sh"]
+
+  query = {
+    param1 = var.param1
+    param2 = var.param2
+  }
+}
+```
+
+Script must read JSON from stdin, output JSON to stdout:
+
+```bash
+#!/bin/bash
+INPUT=$(cat)
+PARAM1=$(echo "$INPUT" | jq -r '.param1')
+
+# Make API call...
+
+echo '{"result": "value"}'
+```
+
+### State Management with null_resource
+
+```hcl
+resource "null_resource" "managed_resource" {
+  triggers = {
+    # Track changes that should trigger recreation
+    config_hash = sha256(jsonencode(var.config))
+    # Store API response for outputs
+    resource_id = data.external.create.result.id
+  }
+
+  provisioner "local-exec" {
+    command = "echo 'Resource created'"
+  }
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "echo 'Resource destroyed'"
+  }
+}
+```
+
+## Checklist for New Modules
+
+- [ ] Create standard file structure
+- [ ] Add input validation for required variables
+- [ ] Document all variables and outputs
+- [ ] Write unit tests with mocks
+- [ ] Write validation tests for error cases
+- [ ] Add README with usage examples
+- [ ] Specify version constraints
+- [ ] Test locally before committing
