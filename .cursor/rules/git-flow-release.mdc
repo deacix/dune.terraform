@@ -1,0 +1,201 @@
+---
+globs: "**/*"
+alwaysApply: true
+---
+
+# Git Flow Release Process
+
+Rules and conventions for branching and releasing in this project following the git flow model.
+
+## Branch Structure
+
+| Branch | Purpose | Protected |
+|--------|---------|-----------|
+| `main` | Production releases, always stable | Yes |
+| `develop` | Integration branch for features | Yes |
+| `feature/*` | New features and enhancements | No |
+| `release/*` | Release preparation and final testing | No |
+| `hotfix/*` | Emergency production fixes | No |
+
+## Branch Flow Diagram
+
+```
+main     ────●────────────────●────────────●──── (tagged releases)
+              ↑                ↑            ↑
+release/*    ─┴─              ─┴─          ─┴─
+              ↑                ↑
+develop  ────●────●────●──────●────●────●──────
+              ↑    ↑    ↑      ↑    ↑
+feature/*    ─┴─  ─┴─  ─┴─    ─┴─  ─┴─
+```
+
+## Commit Message Conventions
+
+Use conventional commit prefixes for automatic version bumping:
+
+| Prefix | Version Bump | When to Use |
+|--------|--------------|-------------|
+| `breaking:` | Major (1.0.0 → 2.0.0) | Breaking API changes, incompatible updates |
+| `major:` | Major (1.0.0 → 2.0.0) | Same as breaking |
+| `feat:` | Minor (1.0.0 → 1.1.0) | New features, capabilities |
+| `feature:` | Minor (1.0.0 → 1.1.0) | Same as feat |
+| `fix:` | Patch (1.0.0 → 1.0.1) | Bug fixes |
+| `docs:` | Patch | Documentation changes |
+| `chore:` | Patch | Maintenance, dependencies |
+| `refactor:` | Patch | Code refactoring |
+| `test:` | Patch | Test additions/changes |
+
+### Commit Message Format
+
+```
+<type>: <short description>
+
+[optional body]
+
+[optional footer]
+```
+
+Examples:
+```bash
+feat: add materialized view refresh endpoint
+fix: correct SQL escaping in query creation
+breaking: change query_id output format to map
+docs: update README with CI/CD section
+chore(deps): update terraform providers
+```
+
+## Workflow: Feature Development
+
+```bash
+# 1. Start from develop
+git checkout develop
+git pull origin develop
+
+# 2. Create feature branch
+git checkout -b feature/add-new-query-type
+
+# 3. Make changes, commit with conventional messages
+git add .
+git commit -m "feat: add support for parameterized queries"
+
+# 4. Push and create PR to develop
+git push -u origin feature/add-new-query-type
+# Create PR: feature/add-new-query-type → develop
+
+# 5. After approval, squash merge to develop
+```
+
+## Workflow: Creating a Release
+
+```bash
+# 1. Start from develop
+git checkout develop
+git pull origin develop
+
+# 2. Create release branch
+git checkout -b release/v1.2.0
+
+# 3. Final testing, version bumps, changelog updates
+# (Optional: update version references if any)
+
+# 4. Push and create PR to main
+git push -u origin release/v1.2.0
+# Create PR: release/v1.2.0 → main
+
+# 5. After approval and merge:
+#    - GitHub Actions automatically creates tag
+#    - GitHub Release is created with changelog
+#    - Backport changes to develop if needed
+```
+
+## Workflow: Hotfix
+
+```bash
+# 1. Start from main (production)
+git checkout main
+git pull origin main
+
+# 2. Create hotfix branch
+git checkout -b hotfix/fix-critical-bug
+
+# 3. Fix the issue
+git add .
+git commit -m "fix: resolve critical query creation failure"
+
+# 4. Push and create PR to main
+git push -u origin hotfix/fix-critical-bug
+# Create PR: hotfix/fix-critical-bug → main
+
+# 5. After merge to main:
+#    - Automatic release is created
+#    - Backport to develop:
+git checkout develop
+git pull origin develop
+git merge main
+git push origin develop
+```
+
+## GitHub Actions Workflows
+
+### Test Workflow (`.github/workflows/test.yml`)
+
+Triggers: Push/PR to `main`, `develop`
+
+Jobs:
+1. **format** - `terraform fmt -check`
+2. **validate** - `terraform validate` on modules and examples
+3. **test** - `terraform test` on dune module
+4. **security** - tfsec security scan
+5. **docs** - README existence check
+
+### Release Workflow (`.github/workflows/release.yml`)
+
+Triggers: Push to `main`, tag `v*`
+
+Jobs:
+1. **validate-release** - Validates PRs from release/hotfix branches
+2. **create-release** - Auto-creates tag and GitHub release
+3. **publish-release** - Final validation on tag push
+4. **notify** - Release notification
+
+## PR Requirements
+
+Before merging PRs:
+
+### To `develop`:
+- [ ] All CI checks pass
+- [ ] Code reviewed
+- [ ] Tests added/updated if needed
+- [ ] `terraform fmt` applied
+
+### To `main`:
+- [ ] Branch is `release/*` or `hotfix/*`
+- [ ] All CI checks pass
+- [ ] Code reviewed
+- [ ] Tests pass
+- [ ] Documentation updated
+
+## Using Released Versions
+
+Reference specific versions in Terraform:
+
+```hcl
+module "dune" {
+  source = "github.com/1inch/dune.terraform//modules/dune?ref=v1.2.0"
+
+  team         = "your-team"
+  dune_api_key = var.dune_api_key
+  # ...
+}
+```
+
+## Quick Reference
+
+| Action | Command |
+|--------|---------|
+| New feature | `git checkout -b feature/name develop` |
+| New release | `git checkout -b release/vX.Y.Z develop` |
+| Hotfix | `git checkout -b hotfix/name main` |
+| Run tests | `make test` |
+| Format code | `make fmt` |
+| Validate | `make validate` |

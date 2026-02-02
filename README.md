@@ -214,6 +214,103 @@ cd modules/dune && terraform test
 - `curl` command-line tool
 - Dune API key with write permissions (Analyst plan or higher)
 
+## CI/CD
+
+This project uses GitHub Actions for continuous integration and releases following the **git flow** branching model.
+
+### Branching Strategy (Git Flow)
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Production releases (protected, tagged) |
+| `develop` | Integration branch for features |
+| `feature/*` | New features (PR to develop) |
+| `release/*` | Release preparation (PR to main) |
+| `hotfix/*` | Emergency fixes (PR to main) |
+
+### Workflows
+
+#### Test Workflow (`.github/workflows/test.yml`)
+
+Runs on every push and PR to `main` and `develop`:
+
+- **Format Check**: Ensures consistent code formatting
+- **Validate**: Validates Terraform configuration
+- **Test**: Runs all module tests
+- **Security**: Scans for security issues with tfsec
+- **Docs**: Verifies documentation exists
+
+#### Release Workflow (`.github/workflows/release.yml`)
+
+Handles releases when merging to `main`:
+
+1. Validates release/hotfix PRs to main
+2. Automatically calculates semantic version from commits
+3. Creates git tag and GitHub release
+4. Generates changelog from commit history
+
+### Version Bumping
+
+Version is calculated automatically based on commit message prefixes:
+
+| Prefix | Version Bump | Example |
+|--------|--------------|---------|
+| `breaking:` or `major:` | Major (1.0.0 → 2.0.0) | Breaking API change |
+| `feat:` or `feature:` | Minor (1.0.0 → 1.1.0) | New feature |
+| (other) | Patch (1.0.0 → 1.0.1) | Bug fixes |
+
+### Development Workflow
+
+```bash
+# 1. Create feature branch from develop
+git checkout develop
+git pull origin develop
+git checkout -b feature/my-feature
+
+# 2. Make changes and commit
+git add .
+git commit -m "feat: add new query type"
+
+# 3. Push and create PR to develop
+git push -u origin feature/my-feature
+# Create PR: feature/my-feature → develop
+
+# 4. After PR approval and merge, create release
+git checkout develop
+git pull origin develop
+git checkout -b release/v1.2.0
+
+# 5. PR release branch to main
+git push -u origin release/v1.2.0
+# Create PR: release/v1.2.0 → main
+
+# 6. Merge triggers automatic release
+```
+
+### Hotfix Workflow
+
+```bash
+# 1. Create hotfix from main
+git checkout main
+git pull origin main
+git checkout -b hotfix/critical-fix
+
+# 2. Fix and commit
+git commit -m "fix: critical bug in query creation"
+
+# 3. PR to main (and backport to develop)
+git push -u origin hotfix/critical-fix
+```
+
+### Status Badges
+
+Add these badges to your fork:
+
+```markdown
+![Test](https://github.com/YOUR_ORG/dune.terraform/actions/workflows/test.yml/badge.svg)
+![Release](https://github.com/YOUR_ORG/dune.terraform/actions/workflows/release.yml/badge.svg)
+```
+
 ## Related Documentation
 
 - [Dune Module README](modules/dune/README.md)

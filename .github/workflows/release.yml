@@ -1,0 +1,220 @@
+# =============================================================================
+# Release Workflow (Git Flow Model)
+# =============================================================================
+# Handles releases following the git flow branching model:
+#   - develop: Integration branch for features
+#   - release/*: Release preparation branches
+#   - main: Production releases (tagged)
+#   - hotfix/*: Emergency production fixes
+#
+# Release Process:
+#   1. Create release/* branch from develop
+#   2. PR release/* to main triggers validation
+#   3. Merge to main triggers release creation
+#   4. Tags are created automatically (vX.Y.Z)
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+env:
+  TF_VERSION: '1.7'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Release Validation (PRs to main)
+  # ---------------------------------------------------------------------------
+  validate-release:
+    name: Validate Release
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check Branch Name
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Source branch: $BRANCH"
+          if [[ ! "$BRANCH" =~ ^(release/|hotfix/) ]]; then
+            echo "::warning::PRs to main should come from release/* or hotfix/* branches (git flow)"
+          fi
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init (Module)
+        run: terraform init
+        working-directory: modules/dune
+
+      - name: Terraform Validate (Module)
+        run: terraform validate
+        working-directory: modules/dune
+
+      - name: Run Tests
+        run: terraform test -verbose
+        working-directory: modules/dune
+
+  # ---------------------------------------------------------------------------
+  # Create Release (on merge to main)
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create Release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Latest Tag
+        id: latest-tag
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest tag: $LATEST"
+
+      - name: Calculate Next Version
+        id: version
+        run: |
+          LATEST="${{ steps.latest-tag.outputs.latest }}"
+          # Remove 'v' prefix
+          VERSION="${LATEST#v}"
+          
+          # Parse version components
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          
+          # Check commit messages for version bump type
+          COMMITS=$(git log $LATEST..HEAD --oneline 2>/dev/null || git log --oneline)
+          
+          if echo "$COMMITS" | grep -qiE "(breaking|major):"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS" | grep -qiE "(feat|feature|minor):"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
+          
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+          echo "New tag: $NEW_TAG"
+
+      - name: Generate Changelog
+        id: changelog
+        run: |
+          LATEST="${{ steps.latest-tag.outputs.latest }}"
+          
+          echo "## What's Changed" > changelog.md
+          echo "" >> changelog.md
+          
+          # Get commits since last tag
+          if git rev-parse "$LATEST" >/dev/null 2>&1; then
+            git log $LATEST..HEAD --pretty=format:"- %s (%h)" >> changelog.md
+          else
+            git log --pretty=format:"- %s (%h)" -10 >> changelog.md
+          fi
+          
+          echo "" >> changelog.md
+          echo "" >> changelog.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$LATEST...${{ steps.version.outputs.tag }}" >> changelog.md
+          
+          cat changelog.md
+
+      - name: Create Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.version.outputs.tag }} -m "Release ${{ steps.version.outputs.tag }}"
+          git push origin ${{ steps.version.outputs.tag }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          body_path: changelog.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Publish Release (on tag push)
+  # ---------------------------------------------------------------------------
+  publish-release:
+    name: Publish Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Final Validation
+        run: |
+          cd modules/dune
+          terraform init
+          terraform validate
+          terraform test
+
+      - name: Release Summary
+        run: |
+          echo "## Release ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Module released successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Usage" >> $GITHUB_STEP_SUMMARY
+          echo '```hcl' >> $GITHUB_STEP_SUMMARY
+          echo 'module "dune" {' >> $GITHUB_STEP_SUMMARY
+          echo '  source = "github.com/${{ github.repository }}//modules/dune?ref=${{ github.ref_name }}"' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '  team         = "your-team"' >> $GITHUB_STEP_SUMMARY
+          echo '  dune_api_key = var.dune_api_key' >> $GITHUB_STEP_SUMMARY
+          echo '  # ...' >> $GITHUB_STEP_SUMMARY
+          echo '}' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Notify on Release
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Notify
+    needs: [create-release]
+    if: always() && needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release Notification
+        run: |
+          echo "Release ${{ needs.create-release.outputs.tag }} created successfully!"
+          echo "View release: https://github.com/${{ github.repository }}/releases/tag/${{ needs.create-release.outputs.tag }}"
