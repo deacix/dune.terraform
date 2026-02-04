@@ -89,6 +89,7 @@ variable "queries" {
     sql         = optional(string)
     tags        = optional(list(string), [])
     private     = optional(bool)
+    query_id    = optional(number)  # Existing query ID (if importing)
   }))
 
   default = {}

@@ -24,12 +24,13 @@
 data "external" "create_query" {
   for_each = var.queries
 
-  program = ["bash", "${local.scripts_path}/create_query.sh"]
+  program = ["bash", "${local.scripts_path}/create_or_get_query.sh"]
 
   query = {
     name       = local.query_full_names[each.key]
     sql        = local.query_body[each.key]
     is_private = tostring(local.query_privacy[each.key])
+    query_id   = tostring(coalesce(each.value.query_id, 0))
   }
 }
 

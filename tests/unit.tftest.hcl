@@ -424,3 +424,29 @@ run "data_sources_disabled_default" {
     error_message = "Existing mat views output should be null when enable_matview_discovery is false"
   }
 }
+
+# -----------------------------------------------------------------------------
+# Test: Query ID Import Support
+# -----------------------------------------------------------------------------
+run "query_id_import" {
+  command = plan
+
+  variables {
+    team         = "test-team"
+    dune_api_key = "test-api-key"
+
+    queries = {
+      imported_query = {
+        name     = "Imported Query"
+        sql      = "SELECT 1"
+        query_id = 12345
+      }
+    }
+  }
+
+  # Verify query_id is passed through
+  assert {
+    condition     = output.query_ids["imported_query"] == 12345
+    error_message = "Query ID should be passed through when importing existing query"
+  }
+}
