@@ -179,3 +179,18 @@ variable "enable_matview_discovery" {
   type        = bool
   default     = false
 }
+
+# -----------------------------------------------------------------------------
+# Materialized View Sync Options
+# -----------------------------------------------------------------------------
+
+variable "force_matview_sync" {
+  description = <<-EOT
+    Force sync materialized view configuration on every apply.
+    When true, runs the upsert API for all mat views to ensure
+    cron_expression and performance are in sync with Terraform.
+    Useful when someone may have changed settings in the Dune UI.
+  EOT
+  type    = bool
+  default = false
+}

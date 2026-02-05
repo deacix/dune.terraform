@@ -1,28 +1,27 @@
 #!/bin/bash
 # =============================================================================
-# Create/Upsert Materialized View Script
+# Update Materialized View Script
 # =============================================================================
-# Creates or updates a materialized view on Dune Analytics via the upsert API.
+# Updates an existing materialized view on Dune Analytics via the upsert API.
+# This ensures cron_expression and performance are always in sync.
 #
-# Usage: ./create_matview.sh
-# Reads JSON input from stdin with: name, query_id, cron, performance, is_private
-# Outputs JSON with: name, full_name, created, execution_id
+# Usage: ./update_matview.sh
+# Reads JSON input from stdin with: name, query_id, cron, performance
+# Outputs JSON with: name, full_name, updated, execution_id
 #
 # Environment: DUNE_API_KEY must be set
 #
 # API Reference: https://docs.dune.com/api-reference/materialized-views/create
-#
-# The upsert endpoint behavior:
+# The upsert endpoint (POST /materialized-views) creates or updates:
 #   - Creates new mat view if none exists for the given query_id
 #   - Updates existing mat view if query_id matches
-#   - Fails if name exists with a DIFFERENT query_id
 #
-# Correct API field names:
-#   - cron_expression (NOT cron_schedule)
-#   - performance (NOT execution_tier)
-#   - name (must be prefixed with result_)
-#   - query_id (integer)
-#   - is_private (boolean, optional)
+# Parameters:
+#   - name: Mat view name (must be prefixed with result_)
+#   - query_id: Integer query ID
+#   - cron_expression: 5-section cron (min 15 mins, max weekly)
+#   - performance: "medium" or "large"
+#   - is_private: Boolean (optional)
 
 set -e
 
@@ -59,7 +58,8 @@ if [ -z "$CRON" ] || [ "$CRON" = "null" ]; then
     exit 1
 fi
 
-# Create/upsert materialized view via API
+# Upsert materialized view via API
+# This will update existing mat view if query_id matches, or create if not exists
 RESPONSE=$(curl -s -X POST \
     -H "X-Dune-API-Key: $DUNE_API_KEY" \
     -H "Content-Type: application/json" \
@@ -75,11 +75,12 @@ RESPONSE=$(curl -s -X POST \
 # Check for errors
 ERROR=$(echo "$RESPONSE" | jq -r '.error // empty')
 if [ -n "$ERROR" ]; then
+    # "already exists" with different query_id is a real error
     echo "{\"error\": \"$ERROR\"}" >&2
     exit 1
 fi
 
-# Extract response fields
+# Extract execution_id from response (indicates refresh was triggered)
 EXECUTION_ID=$(echo "$RESPONSE" | jq -r '.execution_id // empty')
 FULL_NAME=$(echo "$RESPONSE" | jq -r '.name // empty')
 
@@ -93,4 +94,4 @@ jq -n \
     --arg name "$NAME" \
     --arg full_name "$FULL_NAME" \
     --arg execution_id "$EXECUTION_ID" \
-    '{name: $name, full_name: $full_name, created: "true", execution_id: $execution_id}'
+    '{name: $name, full_name: $full_name, updated: "true", execution_id: $execution_id}'

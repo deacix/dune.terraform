@@ -119,6 +119,13 @@ resource "null_resource" "queries" {
 # -----------------------------------------------------------------------------
 # Creates and manages materialized views for cached query results.
 # Each mat view is linked to a query and has a refresh schedule.
+#
+# IMPORTANT: Uses the Dune upsert API which creates OR updates mat views.
+# The API expects these field names (per docs):
+#   - cron_expression (NOT cron_schedule)
+#   - performance (NOT execution_tier)
+#
+# See: https://docs.dune.com/api-reference/materialized-views/create
 
 resource "null_resource" "materialized_views" {
   for_each = var.materialized_views
@@ -132,11 +139,13 @@ resource "null_resource" "materialized_views" {
     query_id     = null_resource.queries[each.value.query_key].triggers.query_id
     cron         = each.value.cron
     performance  = local.mv_performance[each.key]
+    is_private   = tostring(local.mv_privacy[each.key])
     team         = var.team
     api_base_url = var.api_base_url
   }
 
-  # Create/upsert materialized view
+  # Create/update materialized view via upsert API
+  # This provisioner runs on both create and update (when triggers change)
   provisioner "local-exec" {
     command = <<-EOT
       set -e
@@ -148,8 +157,12 @@ resource "null_resource" "materialized_views" {
         exit 1
       fi
       
-      echo "Creating materialized view ${each.key} for query $QUERY_ID..."
+      echo "Upserting materialized view ${each.key}..."
+      echo "  Query ID: $QUERY_ID"
+      echo "  Cron: ${each.value.cron}"
+      echo "  Performance: ${local.mv_performance[each.key]}"
       
+      # Use the upsert API - this creates or updates the mat view
       RESPONSE=$(curl -s -X POST \
         -H "X-Dune-API-Key: $DUNE_API_KEY" \
         -H "Content-Type: application/json" \
@@ -158,16 +171,20 @@ resource "null_resource" "materialized_views" {
           "query_id": '$QUERY_ID',
           "cron_expression": "${each.value.cron}",
           "performance": "${local.mv_performance[each.key]}",
-          "is_private": true
+          "is_private": ${self.triggers.is_private}
         }' \
         "${var.api_base_url}/materialized-views")
       
-      # Check for errors (but don't fail - upsert behavior)
+      # Check response
       if echo "$RESPONSE" | grep -q '"error"'; then
-        echo "Warning: $RESPONSE"
-      else
-        echo "Created materialized view: dune.${var.team}.${each.key}"
+        ERROR=$(echo "$RESPONSE" | jq -r '.error')
+        echo "Error: $ERROR" >&2
+        exit 1
       fi
+      
+      EXECUTION_ID=$(echo "$RESPONSE" | jq -r '.execution_id // "none"')
+      echo "Materialized view upserted: dune.${var.team}.${each.key}"
+      echo "Refresh execution: $EXECUTION_ID"
     EOT
 
     interpreter = ["/bin/bash", "-c"]
@@ -202,6 +219,78 @@ resource "null_resource" "materialized_views" {
     EOT
 
     interpreter = ["/bin/bash", "-c"]
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Materialized View Sync (Force Update)
+# -----------------------------------------------------------------------------
+# This resource ensures mat views are always in sync with Terraform config.
+# It runs the upsert API on every apply to guarantee cron/performance are correct.
+# This is useful when:
+#   - Someone manually changed settings in the Dune UI
+#   - The initial create failed silently
+#   - You want to ensure consistency
+#
+# Note: This does NOT cause unnecessary refreshes - the upsert is idempotent
+# and Dune only triggers a refresh if the underlying query changed.
+
+resource "null_resource" "materialized_views_sync" {
+  for_each = var.materialized_views
+
+  depends_on = [null_resource.materialized_views]
+
+  # Always run on apply by using timestamp
+  # This ensures mat views are always synced to Terraform config
+  triggers = {
+    # Core configuration - changes here should sync
+    name        = each.key
+    query_id    = null_resource.queries[each.value.query_key].triggers.query_id
+    cron        = each.value.cron
+    performance = local.mv_performance[each.key]
+    is_private  = tostring(local.mv_privacy[each.key])
+    team        = var.team
+    # Force sync on every apply when sync_on_apply is true
+    sync_timestamp = var.force_matview_sync ? timestamp() : "disabled"
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e
+      
+      QUERY_ID="${self.triggers.query_id}"
+      
+      if [ -z "$QUERY_ID" ] || [ "$QUERY_ID" = "0" ]; then
+        echo "Skipping sync - no query ID"
+        exit 0
+      fi
+      
+      echo "Syncing materialized view ${each.key}..."
+      
+      RESPONSE=$(curl -s -X POST \
+        -H "X-Dune-API-Key: $DUNE_API_KEY" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "name": "${each.key}",
+          "query_id": '$QUERY_ID',
+          "cron_expression": "${each.value.cron}",
+          "performance": "${local.mv_performance[each.key]}",
+          "is_private": ${self.triggers.is_private}
+        }' \
+        "${var.api_base_url}/materialized-views")
+      
+      if echo "$RESPONSE" | grep -q '"error"'; then
+        echo "Warning: $(echo "$RESPONSE" | jq -r '.error')"
+      else
+        echo "Synced: dune.${var.team}.${each.key}"
+      fi
+    EOT
+
+    interpreter = ["/bin/bash", "-c"]
+
+    environment = {
+      DUNE_API_KEY = var.dune_api_key
+    }
   }
 }
 
@@ -294,6 +383,10 @@ resource "local_file" "state_yaml" {
 # -----------------------------------------------------------------------------
 # Verifies that actual Dune mat view configuration matches Terraform state.
 # This runs during `terraform plan` to detect configuration drift.
+#
+# Note: The Dune GET API does not return cron_schedule or performance,
+# so we can only verify existence and query_id. The sync resource above
+# ensures configuration is always applied.
 
 data "external" "verify_matview" {
   for_each = var.materialized_views
@@ -301,8 +394,8 @@ data "external" "verify_matview" {
   program = ["bash", "${local.scripts_path}/verify_matview.sh"]
 
   query = {
-    name             = "dune.${var.team}.${each.key}"
-    expected_cron    = each.value.cron
+    name              = "dune.${var.team}.${each.key}"
+    expected_cron     = each.value.cron
     expected_query_id = tostring(coalesce(var.queries[each.value.query_key].query_id, 0))
   }
 }
@@ -325,56 +418,4 @@ output "has_matview_drift" {
   value = anytrue([
     for k, v in data.external.verify_matview : v.result.status == "drift" || v.result.status == "missing"
   ])
-}
-
-# Resource to force re-apply when drift is detected
-resource "null_resource" "matview_drift_check" {
-  for_each = {
-    for k, v in data.external.verify_matview : k => v
-    if v.result.status == "drift" || v.result.status == "missing"
-  }
-
-  # Force recreation when drift is detected
-  triggers = {
-    drift_status = each.value.result.status
-    drift_message = each.value.result.message
-    timestamp = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = <<-EOT
-      echo "=========================================="
-      echo "DRIFT DETECTED: ${each.key}"
-      echo "Status: ${each.value.result.status}"
-      echo "Message: ${each.value.result.message}"
-      echo "Actual cron: ${each.value.result.actual_cron}"
-      echo "Expected cron: ${var.materialized_views[each.key].cron}"
-      echo "=========================================="
-      echo ""
-      echo "Re-applying materialized view configuration..."
-      
-      QUERY_ID="${null_resource.queries[var.materialized_views[each.key].query_key].triggers.query_id}"
-      
-      curl -s -X POST \
-        -H "X-Dune-API-Key: $DUNE_API_KEY" \
-        -H "Content-Type: application/json" \
-        -d '{
-          "name": "${each.key}",
-          "query_id": '$QUERY_ID',
-          "cron_expression": "${var.materialized_views[each.key].cron}",
-          "performance": "${local.mv_performance[each.key]}",
-          "is_private": true
-        }' \
-        "${var.api_base_url}/materialized-views"
-      
-      echo ""
-      echo "Mat view ${each.key} configuration re-applied."
-    EOT
-
-    interpreter = ["/bin/bash", "-c"]
-
-    environment = {
-      DUNE_API_KEY = var.dune_api_key
-    }
-  }
 }

@@ -51,6 +51,11 @@ locals {
     for k, v in var.materialized_views : k => coalesce(v.performance, var.default_performance)
   }
 
+  # Materialized view privacy settings (inherits from query or uses default)
+  mv_privacy = {
+    for k, v in var.materialized_views : k => local.query_privacy[v.query_key]
+  }
+
   # Script paths
   scripts_path = "${path.module}/scripts"
 }
