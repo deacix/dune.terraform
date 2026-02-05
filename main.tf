@@ -50,6 +50,7 @@ resource "null_resource" "queries" {
   }
 
   # Update query when SQL changes
+  # Note: Uses jq to safely construct JSON, avoiding shell escaping issues with SQL
   provisioner "local-exec" {
     command = <<-EOT
       set -e
@@ -59,13 +60,15 @@ resource "null_resource" "queries" {
       if [ -n "$QUERY_ID" ] && [ "$QUERY_ID" != "0" ]; then
         echo "Updating query ${each.key} (ID: $QUERY_ID)..."
         
+        # Use jq to safely construct JSON from environment variables
+        # This avoids shell escaping issues with SQL containing special characters
+        BODY=$(jq -n --arg name "$QUERY_NAME" --arg sql "$QUERY_SQL" \
+          '{name: $name, query_sql: $sql}')
+        
         curl -s -X PATCH \
           -H "X-Dune-API-Key: $DUNE_API_KEY" \
           -H "Content-Type: application/json" \
-          -d '{
-            "name": ${jsonencode(local.query_full_names[each.key])},
-            "query_sql": ${jsonencode(local.query_body[each.key])}
-          }' \
+          -d "$BODY" \
           "${var.api_base_url}/query/$QUERY_ID" > /dev/null
         
         echo "Updated query $QUERY_ID"
@@ -76,6 +79,8 @@ resource "null_resource" "queries" {
 
     environment = {
       DUNE_API_KEY = var.dune_api_key
+      QUERY_NAME   = local.query_full_names[each.key]
+      QUERY_SQL    = local.query_body[each.key]
     }
   }
 
